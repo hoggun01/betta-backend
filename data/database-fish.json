@@ -1,0 +1,20 @@
+{
+  "1": {
+    "tokenId": "1",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764744749441,
+    "walletAddress": "0x0000000000000000000000000000000000000000",
+    "fid": null
+  },
+  "3": {
+    "tokenId": "3",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764744388510,
+    "walletAddress": "0xb668cf489f64f1a478b4a269861b1bb651d4a724",
+    "fid": 250641
+  }
+}
