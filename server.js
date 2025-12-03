@@ -1,18 +1,17 @@
 const express = require("express");
+const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+
+// CORS (boleh untuk farcaster.xyz / vercel / dll)
+app.use(cors());
 app.use(express.json());
 
-// ===== CORS + Preflight (NO app.options("*"))
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
+// IMPORTANT: Express versi baru kadang error kalau "*".
+// Paling aman pakai regex:
+app.options(/.*/, cors());
 
 // ====== CONFIG RARITY & EXP RULES ======
 const MAX_LEVEL_BY_RARITY = {
@@ -24,9 +23,10 @@ const MAX_LEVEL_BY_RARITY = {
   SPIRIT: 25,
 };
 
-const FEED_EXP_GAIN = 20;
-const COOLDOWN_MS = 30 * 60 * 1000;
+const FEED_EXP_GAIN = 20; // +20 exp per feed
+const COOLDOWN_MS = 30 * 60 * 1000; // 30 menit
 
+// expNeeded(level) = 100 + (level - 1) * 40
 function getExpNeededForNextLevel(level) {
   if (level <= 0) return 100;
   return 100 + (level - 1) * 40;
@@ -37,15 +37,20 @@ const DATA_DIR = path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "database-fish.json");
 
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, "{}", "utf-8");
+  } catch (err) {
+    console.error("ensureDataDir error:", err);
+  }
 }
 
 function loadDB() {
   try {
     ensureDataDir();
-    if (!fs.existsSync(DB_PATH)) return {};
     const raw = fs.readFileSync(DB_PATH, "utf-8");
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+    return JSON.parse(raw);
   } catch (err) {
     console.error("loadDB error:", err);
     return {};
@@ -61,31 +66,23 @@ function saveDB(db) {
   }
 }
 
-function computeProgressShape(entry) {
-  const rarity = entry?.rarity || null;
-  const level = Number(entry?.level || 1);
-  const exp = Number(entry?.exp || 0);
-
-  const maxLevel = rarity ? (MAX_LEVEL_BY_RARITY[rarity] || 1) : 1;
-  const isMax = !!rarity && level >= maxLevel;
-  const expNeededNext = isMax ? 0 : getExpNeededForNextLevel(level);
-
-  return { level, exp, expNeededNext, isMax };
-}
-
+// ====== RUMUS FEED (LEVEL UP) ======
 function applyFeed(entry, rarity) {
   const maxLevel = MAX_LEVEL_BY_RARITY[rarity] || 1;
+
   let level = entry.level || 1;
   let exp = entry.exp || 0;
 
   exp += FEED_EXP_GAIN;
 
   while (true) {
+    const needed = getExpNeededForNextLevel(level);
+
     if (level >= maxLevel) {
-      exp = 0;
+      exp = 0; // kalau max level, exp dikunci 0 (sesuai rules sebelumnya)
       break;
     }
-    const needed = getExpNeededForNextLevel(level);
+
     if (exp >= needed) {
       exp -= needed;
       level += 1;
@@ -97,30 +94,37 @@ function applyFeed(entry, rarity) {
   return { level, exp };
 }
 
+function buildProgressPayload(entryOrNull, rarityFallback) {
+  const rarity = (entryOrNull?.rarity || rarityFallback || "COMMON").toUpperCase();
+  const maxLevel = MAX_LEVEL_BY_RARITY[rarity] || 1;
+
+  const level = entryOrNull?.level ?? 1;
+  const exp = entryOrNull?.exp ?? 0;
+
+  const isMax = level >= maxLevel;
+  const expNeededNext = isMax ? 0 : getExpNeededForNextLevel(level);
+
+  return { level, exp, expNeededNext, isMax };
+}
+
 // ====== ROUTE: PROGRESS ======
+// body: { fishes: [{ tokenId:"1", rarity:"COMMON" }, ...] }
 app.post("/progress", (req, res) => {
   try {
-    const { fishes, tokenIds } = req.body || {};
-
-    let ids = [];
-    if (Array.isArray(fishes)) {
-      ids = fishes.map((f) => String(f?.tokenId)).filter(Boolean);
-    } else if (Array.isArray(tokenIds)) {
-      ids = tokenIds.map((id) => String(id)).filter(Boolean);
-    }
-
-    if (!ids.length) {
-      return res.status(400).json({ ok: false, error: "INVALID_PARAMS" });
+    const { fishes } = req.body || {};
+    if (!Array.isArray(fishes)) {
+      return res.status(400).json({ ok: false, error: "INVALID_FISHES" });
     }
 
     const db = loadDB();
     const progressByToken = {};
 
-    for (const tokenId of ids) {
-      const entry = db[tokenId];
-      progressByToken[tokenId] = entry
-        ? computeProgressShape(entry)
-        : computeProgressShape({ rarity: null, level: 1, exp: 0 });
+    for (const f of fishes) {
+      const tokenId = String(f?.tokenId ?? "");
+      if (!tokenId) continue;
+
+      const entry = db[tokenId] || null;
+      progressByToken[tokenId] = buildProgressPayload(entry, f?.rarity);
     }
 
     return res.json({ ok: true, progressByToken });
@@ -131,9 +135,11 @@ app.post("/progress", (req, res) => {
 });
 
 // ====== ROUTE: FEED ======
+// body: { tokenId:"1", rarity:"COMMON", walletAddress?, fid? }
 app.post("/feed", (req, res) => {
   try {
     const { tokenId, rarity, walletAddress, fid } = req.body || {};
+
     if (!tokenId || !rarity) {
       return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
     }
@@ -144,7 +150,7 @@ app.post("/feed", (req, res) => {
 
     const existing = db[key] || {
       tokenId: key,
-      rarity,
+      rarity: rarity,
       level: 1,
       exp: 0,
       lastFeedAt: 0,
@@ -152,11 +158,20 @@ app.post("/feed", (req, res) => {
       fid: fid || null,
     };
 
+    // cooldown backend
     if (existing.lastFeedAt && now - existing.lastFeedAt < COOLDOWN_MS) {
       const remainingMs = existing.lastFeedAt + COOLDOWN_MS - now;
-      return res.status(429).json({ ok: false, error: "ON_COOLDOWN", remainingMs });
+      return res.status(429).json({
+        ok: false,
+        error: "ON_COOLDOWN",
+        remainingMs,
+        retryAt: existing.lastFeedAt + COOLDOWN_MS,
+        cooldownMs: COOLDOWN_MS,
+        lastFeedAt: existing.lastFeedAt,
+      });
     }
 
+    // apply rumus exp/level
     const updatedStats = applyFeed(existing, rarity);
 
     const updated = {
@@ -172,16 +187,16 @@ app.post("/feed", (req, res) => {
     db[key] = updated;
     saveDB(db);
 
-    const shaped = computeProgressShape(updated);
+    const progress = buildProgressPayload(updated, rarity);
 
     return res.json({
       ok: true,
       tokenId: key,
       rarity,
-      level: shaped.level,
-      exp: shaped.exp,
-      expNeededNext: shaped.expNeededNext,
-      isMax: shaped.isMax,
+      level: progress.level,
+      exp: progress.exp,
+      expNeededNext: progress.expNeededNext,
+      isMax: progress.isMax,
       cooldownMs: COOLDOWN_MS,
       lastFeedAt: updated.lastFeedAt,
     });
@@ -191,11 +206,11 @@ app.post("/feed", (req, res) => {
   }
 });
 
+// ====== HEALTHCHECK ======
 app.get("/", (req, res) => {
   res.json({ ok: true, message: "Betta backend running" });
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Betta backend listening on port ${PORT}`);
-});
+ensureDataDir();
+app.listen(PORT, () => console.log(`Betta backend listening on port ${PORT}`));
