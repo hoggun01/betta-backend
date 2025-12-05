@@ -1,216 +1,442 @@
-const express = require("express");
-const cors = require("cors");
+"use strict";
+
 const fs = require("fs");
 const path = require("path");
+const express = require("express");
 
 const app = express();
+app.use(express.json({ limit: "1mb" }));
 
-// CORS (boleh untuk farcaster.xyz / vercel / dll)
-app.use(cors());
-app.use(express.json());
+/* =========================
+   Config
+   ========================= */
+const PORT = Number(process.env.PORT || 4000);
 
-// IMPORTANT: Express versi baru kadang error kalau "*".
-// Paling aman pakai regex:
-app.options(/.*/, cors());
+// RPC Base (wajib stabil, jangan default kalau sering rate limit)
+const BASE_RPC_URL =
+  process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org";
 
-// ====== CONFIG RARITY & EXP RULES ======
+// Contract address (wajib)
+const BETTA_CONTRACT =
+  (process.env.BETTA_CONTRACT_ADDRESS ||
+    process.env.NEXT_PUBLIC_BETTA_CONTRACT ||
+    process.env.NEXT_PUBLIC_BETTA_CONTRACT_ADDRESS ||
+    "").trim();
+
+if (!BETTA_CONTRACT) {
+  console.error("❌ Missing BETTA_CONTRACT_ADDRESS env");
+}
+
+// Contract creation block (BaseScan menunjukkan 38669617)
+const START_BLOCK = BigInt(process.env.BETTA_START_BLOCK || "38669617");
+
+// log scan chunk blocks (kalau RPC limit, turunin ini)
+const LOG_CHUNK = BigInt(process.env.BETTA_LOG_CHUNK || "20000");
+
+// feed config
+const EXP_PER_FEED = Number(process.env.EXP_PER_FEED || 20);
+
+// gampang ganti cooldown di sini:
+// contoh 1 menit: FEED_COOLDOWN_MS=60000
+// contoh 10 menit: FEED_COOLDOWN_MS=600000
+// contoh 30 menit: FEED_COOLDOWN_MS=1800000
+const FEED_COOLDOWN_MS = Number(process.env.FEED_COOLDOWN_MS || 1800000);
+
+// max level per rarity
 const MAX_LEVEL_BY_RARITY = {
   COMMON: 15,
   UNCOMMON: 20,
   RARE: 30,
+  SPIRIT: 25,
   EPIC: 40,
   LEGENDARY: 50,
-  SPIRIT: 25,
 };
 
-const FEED_EXP_GAIN = 20; // +20 exp per feed
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 menit
-
-// expNeeded(level) = 100 + (level - 1) * 40
-function getExpNeededForNextLevel(level) {
-  if (level <= 0) return 100;
-  return 100 + (level - 1) * 40;
+// exp needed (simple & stabil): 100 + (level-1)*40
+function expNeededForNext(level) {
+  return Math.max(0, 100 + Math.max(0, level - 1) * 40);
 }
 
-// ====== "Database" JSON di VPS ======
+/* =========================
+   Storage (JSON files)
+   ========================= */
 const DATA_DIR = path.join(__dirname, "data");
-const DB_PATH = path.join(DATA_DIR, "database-fish.json");
+const PROGRESS_DB_PATH = path.join(DATA_DIR, "database-fish.json");
+const OWNED_CACHE_PATH = path.join(DATA_DIR, "wallet-owned.json");
 
 function ensureDataDir() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, "{}", "utf-8");
-  } catch (err) {
-    console.error("ensureDataDir error:", err);
-  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-function loadDB() {
+function readJsonSafe(filePath, fallback) {
   try {
-    ensureDataDir();
-    const raw = fs.readFileSync(DB_PATH, "utf-8");
-    if (!raw) return {};
+    if (!fs.existsSync(filePath)) return fallback;
+    const raw = fs.readFileSync(filePath, "utf8");
+    if (!raw) return fallback;
     return JSON.parse(raw);
-  } catch (err) {
-    console.error("loadDB error:", err);
-    return {};
+  } catch {
+    return fallback;
   }
 }
 
-function saveDB(db) {
-  try {
-    ensureDataDir();
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
-  } catch (err) {
-    console.error("saveDB error:", err);
-  }
+function writeJsonAtomic(filePath, obj) {
+  const tmp = filePath + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, filePath);
 }
 
-// ====== RUMUS FEED (LEVEL UP) ======
-function applyFeed(entry, rarity) {
-  const maxLevel = MAX_LEVEL_BY_RARITY[rarity] || 1;
+ensureDataDir();
 
-  let level = entry.level || 1;
-  let exp = entry.exp || 0;
+let progressDb = readJsonSafe(PROGRESS_DB_PATH, {});
+let ownedCache = readJsonSafe(OWNED_CACHE_PATH, {});
 
-  exp += FEED_EXP_GAIN;
-
-  while (true) {
-    const needed = getExpNeededForNextLevel(level);
-
-    if (level >= maxLevel) {
-      exp = 0; // kalau max level, exp dikunci 0 (sesuai rules sebelumnya)
-      break;
-    }
-
-    if (exp >= needed) {
-      exp -= needed;
-      level += 1;
-      continue;
-    }
-    break;
-  }
-
-  return { level, exp };
-}
-
-function buildProgressPayload(entryOrNull, rarityFallback) {
-  const rarity = (entryOrNull?.rarity || rarityFallback || "COMMON").toUpperCase();
-  const maxLevel = MAX_LEVEL_BY_RARITY[rarity] || 1;
-
-  const level = entryOrNull?.level ?? 1;
-  const exp = entryOrNull?.exp ?? 0;
-
-  const isMax = level >= maxLevel;
-  const expNeededNext = isMax ? 0 : getExpNeededForNextLevel(level);
-
-  return { level, exp, expNeededNext, isMax };
-}
-
-// ====== ROUTE: PROGRESS ======
-// body: { fishes: [{ tokenId:"1", rarity:"COMMON" }, ...] }
-app.post("/progress", (req, res) => {
-  try {
-    const { fishes } = req.body || {};
-    if (!Array.isArray(fishes)) {
-      return res.status(400).json({ ok: false, error: "INVALID_FISHES" });
-    }
-
-    const db = loadDB();
-    const progressByToken = {};
-
-    for (const f of fishes) {
-      const tokenId = String(f?.tokenId ?? "");
-      if (!tokenId) continue;
-
-      const entry = db[tokenId] || null;
-      progressByToken[tokenId] = buildProgressPayload(entry, f?.rarity);
-    }
-
-    return res.json({ ok: true, progressByToken });
-  } catch (err) {
-    console.error("POST /progress error:", err);
-    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
-  }
+/* =========================
+   CORS
+   ========================= */
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  next();
 });
 
-// ====== ROUTE: FEED ======
-// body: { tokenId:"1", rarity:"COMMON", walletAddress?, fid? }
-app.post("/feed", (req, res) => {
-  try {
-    const { tokenId, rarity, walletAddress, fid } = req.body || {};
+/* =========================
+   Minimal JSON-RPC helpers
+   ========================= */
+async function rpc(method, params) {
+  const body = {
+    jsonrpc: "2.0",
+    id: 1,
+    method,
+    params,
+  };
 
-    if (!tokenId || !rarity) {
-      return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+  const r = await fetch(BASE_RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`RPC HTTP ${r.status}: ${t.slice(0, 200)}`);
+  }
+  const j = await r.json();
+  if (j.error) throw new Error(`RPC error: ${JSON.stringify(j.error)}`);
+  return j.result;
+}
+
+function toHexBlock(bn) {
+  return "0x" + bn.toString(16);
+}
+async function getLatestBlockNumber() {
+  const hex = await rpc("eth_blockNumber", []);
+  return BigInt(hex);
+}
+
+function pad64No0x(hexNo0x) {
+  return hexNo0x.padStart(64, "0");
+}
+function topicForAddress(addr) {
+  const a = addr.toLowerCase().replace(/^0x/, "");
+  return "0x" + pad64No0x(a);
+}
+
+// keccak256("Transfer(address,address,uint256)")
+const TRANSFER_SIG =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+async function getTransferLogs({ fromBlock, toBlock, fromAddr, toAddr }) {
+  const topics = [TRANSFER_SIG, null, null, null];
+
+  if (fromAddr) topics[1] = topicForAddress(fromAddr);
+  if (toAddr) topics[2] = topicForAddress(toAddr);
+
+  const filter = {
+    address: BETTA_CONTRACT,
+    fromBlock: toHexBlock(fromBlock),
+    toBlock: toHexBlock(toBlock),
+    topics,
+  };
+
+  return await rpc("eth_getLogs", [filter]);
+}
+
+function tokenIdFromLog(log) {
+  // ERC721 Transfer tokenId indexed => topics[3]
+  const t3 = log?.topics?.[3];
+  if (!t3) return null;
+  try {
+    return BigInt(t3);
+  } catch {
+    return null;
+  }
+}
+
+/* =========================
+   Owned token cache via logs
+   ========================= */
+async function updateOwnedTokensForWallet(wallet) {
+  if (!BETTA_CONTRACT) throw new Error("BETTA_CONTRACT_ADDRESS not set");
+  const w = wallet.toLowerCase();
+  const entry = ownedCache[w] || { lastScannedBlock: null, tokenIds: [] };
+
+  const latest = await getLatestBlockNumber();
+
+  let start = START_BLOCK;
+  if (entry.lastScannedBlock !== null && entry.lastScannedBlock !== undefined) {
+    const prev = BigInt(entry.lastScannedBlock);
+    if (prev + 1n > start) start = prev + 1n;
+  }
+
+  // current holdings set
+  const set = new Set((entry.tokenIds || []).map((x) => String(x)));
+
+  if (start > latest) {
+    // nothing to do
+    ownedCache[w] = { lastScannedBlock: String(latest), tokenIds: Array.from(set).sort((a,b)=>Number(a)-Number(b)) };
+    writeJsonAtomic(OWNED_CACHE_PATH, ownedCache);
+    return ownedCache[w];
+  }
+
+  // scan logs in ranges
+  for (let from = start; from <= latest; from += LOG_CHUNK) {
+    const to = (from + LOG_CHUNK - 1n) > latest ? latest : (from + LOG_CHUNK - 1n);
+
+    // receive logs
+    const logsTo = await getTransferLogs({ fromBlock: from, toBlock: to, toAddr: w });
+    for (const lg of logsTo) {
+      const tid = tokenIdFromLog(lg);
+      if (tid !== null) set.add(tid.toString());
     }
 
-    const now = Date.now();
-    const db = loadDB();
-    const key = String(tokenId);
+    // send logs (remove)
+    const logsFrom = await getTransferLogs({ fromBlock: from, toBlock: to, fromAddr: w });
+    for (const lg of logsFrom) {
+      const tid = tokenIdFromLog(lg);
+      if (tid !== null) set.delete(tid.toString());
+    }
+  }
 
-    const existing = db[key] || {
-      tokenId: key,
-      rarity: rarity,
+  const tokenIds = Array.from(set).sort((a, b) => Number(a) - Number(b));
+
+  ownedCache[w] = {
+    lastScannedBlock: String(latest),
+    tokenIds,
+  };
+  writeJsonAtomic(OWNED_CACHE_PATH, ownedCache);
+
+  return ownedCache[w];
+}
+
+/* =========================
+   Progress DB helpers
+   ========================= */
+function progressKey(walletAddress, tokenIdStr) {
+  const w = (walletAddress || "").toLowerCase();
+  if (!w) return tokenIdStr; // fallback
+  return `${w}:${tokenIdStr}`;
+}
+function normalizeRarity(r) {
+  const up = String(r || "").toUpperCase();
+  if (up === "COMMON") return "COMMON";
+  if (up === "UNCOMMON") return "UNCOMMON";
+  if (up === "RARE") return "RARE";
+  if (up === "EPIC") return "EPIC";
+  if (up === "LEGENDARY") return "LEGENDARY";
+  if (up === "SPIRIT") return "SPIRIT";
+  return "COMMON";
+}
+function getMaxLevel(rarity) {
+  return MAX_LEVEL_BY_RARITY[rarity] || 15;
+}
+
+function getOrInitProgress({ tokenId, rarity, walletAddress, fid }) {
+  const tokenIdStr = String(tokenId);
+  const rar = normalizeRarity(rarity);
+  const key = progressKey(walletAddress, tokenIdStr);
+
+  // prefer walletKey, fallback to tokenId only (biar backward compatible)
+  let row = progressDb[key] || progressDb[tokenIdStr];
+
+  if (!row) {
+    row = {
+      tokenId: tokenIdStr,
+      rarity: rar,
       level: 1,
       exp: 0,
       lastFeedAt: 0,
       walletAddress: walletAddress || null,
-      fid: fid || null,
+      fid: fid ?? null,
     };
+  } else {
+    // normalize
+    row.tokenId = tokenIdStr;
+    row.rarity = rar;
+    row.walletAddress = walletAddress || row.walletAddress || null;
+    row.fid = fid ?? row.fid ?? null;
+  }
 
-    // cooldown backend
-    if (existing.lastFeedAt && now - existing.lastFeedAt < COOLDOWN_MS) {
-      const remainingMs = existing.lastFeedAt + COOLDOWN_MS - now;
-      return res.status(429).json({
-        ok: false,
-        error: "ON_COOLDOWN",
-        remainingMs,
-        retryAt: existing.lastFeedAt + COOLDOWN_MS,
-        cooldownMs: COOLDOWN_MS,
-        lastFeedAt: existing.lastFeedAt,
-      });
+  return { key, row };
+}
+
+function serializeProgress(row) {
+  const level = Number(row.level || 1);
+  const exp = Number(row.exp || 0);
+  const maxLevel = getMaxLevel(row.rarity);
+  const isMax = level >= maxLevel;
+
+  if (isMax) {
+    return { level: maxLevel, exp: expNeededForNext(maxLevel), expNeededNext: 0, isMax: true };
+  }
+
+  const need = expNeededForNext(level);
+  return { level, exp, expNeededNext: need, isMax: false };
+}
+
+/* =========================
+   Routes
+   ========================= */
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "Betta backend is running", port: PORT });
+});
+
+// ✅ NEW: returns tokenIds owned by wallet (fast, accurate)
+app.get("/owned", async (req, res) => {
+  try {
+    const wallet = String(req.query.wallet || "").trim();
+    if (!wallet || !wallet.startsWith("0x") || wallet.length < 10) {
+      return res.status(400).json({ ok: false, error: "INVALID_WALLET" });
     }
-
-    // apply rumus exp/level
-    const updatedStats = applyFeed(existing, rarity);
-
-    const updated = {
-      ...existing,
-      rarity,
-      level: updatedStats.level,
-      exp: updatedStats.exp,
-      lastFeedAt: now,
-      walletAddress: walletAddress || existing.walletAddress,
-      fid: fid || existing.fid,
-    };
-
-    db[key] = updated;
-    saveDB(db);
-
-    const progress = buildProgressPayload(updated, rarity);
-
+    const entry = await updateOwnedTokensForWallet(wallet);
     return res.json({
       ok: true,
-      tokenId: key,
-      rarity,
-      level: progress.level,
-      exp: progress.exp,
-      expNeededNext: progress.expNeededNext,
-      isMax: progress.isMax,
-      cooldownMs: COOLDOWN_MS,
-      lastFeedAt: updated.lastFeedAt,
+      wallet: wallet.toLowerCase(),
+      tokenIds: entry.tokenIds || [],
+      lastScannedBlock: entry.lastScannedBlock,
     });
-  } catch (err) {
-    console.error("POST /feed error:", err);
+  } catch (e) {
+    console.error("GET /owned error", e);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
 
-// ====== HEALTHCHECK ======
-app.get("/", (req, res) => {
-  res.json({ ok: true, message: "Betta backend running" });
+// returns progress for fishes
+app.post("/progress", (req, res) => {
+  try {
+    const fishes = req.body?.fishes;
+    const walletAddress = (req.body?.walletAddress || "").toString();
+    const fid = req.body?.fid ?? null;
+
+    if (!Array.isArray(fishes) || fishes.length === 0) {
+      return res.status(400).json({ ok: false, error: "INVALID_FISHES" });
+    }
+
+    const out = {};
+    for (const f of fishes) {
+      const tokenId = String(f?.tokenId ?? "");
+      const rarity = normalizeRarity(f?.rarity);
+      if (!tokenId) continue;
+
+      const { row } = getOrInitProgress({ tokenId, rarity, walletAddress, fid });
+      out[tokenId] = serializeProgress(row);
+    }
+
+    return res.json({ ok: true, progressByToken: out });
+  } catch (e) {
+    console.error("POST /progress error", e);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
 });
 
-const PORT = process.env.PORT || 4000;
-ensureDataDir();
-app.listen(PORT, () => console.log(`Betta backend listening on port ${PORT}`));
+// feed (adds exp, enforces cooldown)
+app.post("/feed", (req, res) => {
+  try {
+    const tokenId = String(req.body?.tokenId ?? "");
+    const rarity = normalizeRarity(req.body?.rarity);
+    const walletAddress = (req.body?.walletAddress || "").toString();
+    const fid = req.body?.fid ?? null;
+
+    if (!tokenId) return res.status(400).json({ ok: false, error: "INVALID_TOKEN" });
+
+    const { key, row } = getOrInitProgress({ tokenId, rarity, walletAddress, fid });
+
+    const now = Date.now();
+    const last = Number(row.lastFeedAt || 0);
+    const nextOkAt = last + FEED_COOLDOWN_MS;
+
+    if (nextOkAt > now) {
+      return res.status(429).json({
+        ok: false,
+        error: "ON_COOLDOWN",
+        remainingMs: nextOkAt - now,
+      });
+    }
+
+    // apply exp/level
+    let level = Number(row.level || 1);
+    let exp = Number(row.exp || 0);
+
+    const maxLevel = getMaxLevel(rarity);
+    if (level >= maxLevel) {
+      return res.json({
+        ok: true,
+        tokenId,
+        rarity,
+        level: maxLevel,
+        exp: expNeededForNext(maxLevel),
+        expNeededNext: 0,
+        isMax: true,
+        cooldownMs: FEED_COOLDOWN_MS,
+        lastFeedAt: now,
+      });
+    }
+
+    exp += EXP_PER_FEED;
+
+    // level up loop
+    while (level < maxLevel) {
+      const need = expNeededForNext(level);
+      if (need <= 0) break;
+      if (exp < need) break;
+      exp -= need;
+      level += 1;
+      if (level >= maxLevel) break;
+    }
+
+    const isMax = level >= maxLevel;
+    row.level = level;
+    row.exp = isMax ? expNeededForNext(maxLevel) : exp; // if max, keep UI pretty
+    row.rarity = rarity;
+    row.lastFeedAt = now;
+    row.walletAddress = walletAddress || row.walletAddress || null;
+    row.fid = fid ?? row.fid ?? null;
+
+    progressDb[key] = row;
+    // optional: also write tokenId-only row for backward compat (safe)
+    progressDb[tokenId] = row;
+
+    writeJsonAtomic(PROGRESS_DB_PATH, progressDb);
+
+    const payload = serializeProgress(row);
+    return res.json({
+      ok: true,
+      tokenId,
+      rarity,
+      ...payload,
+      cooldownMs: FEED_COOLDOWN_MS,
+      lastFeedAt: now,
+    });
+  } catch (e) {
+    console.error("POST /feed error", e);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+/* =========================
+   Start
+   ========================= */
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Betta backend listening on port ${PORT}`);
+});
