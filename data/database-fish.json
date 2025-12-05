@@ -8,13 +8,337 @@
     "walletAddress": "0x0000000000000000000000000000000000000000",
     "fid": null
   },
+  "2": {
+    "tokenId": "2",
+    "rarity": "COMMON",
+    "level": 3,
+    "exp": 80,
+    "lastFeedAt": 1764921795608,
+    "walletAddress": "0xcCE14400E01b00049E4417C9A45295Cb25CAb98A",
+    "fid": 250139
+  },
   "3": {
     "tokenId": "3",
     "rarity": "COMMON",
+    "level": 2,
+    "exp": 60,
+    "lastFeedAt": 1764868295118,
+    "walletAddress": "0xB668CF489F64f1A478b4a269861B1bB651d4a724",
+    "fid": 250641
+  },
+  "7": {
+    "tokenId": "7",
+    "rarity": "UNCOMMON",
     "level": 1,
     "exp": 20,
-    "lastFeedAt": 1764744388510,
-    "walletAddress": "0xb668cf489f64f1a478b4a269861b1bb651d4a724",
-    "fid": 250641
+    "lastFeedAt": 1764820054267,
+    "walletAddress": "0xd67f4e14f6B736f462AFFCc9b83395c05cBA1aA7",
+    "fid": 303119
+  },
+  "9": {
+    "tokenId": "9",
+    "rarity": "RARE",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764751415711,
+    "walletAddress": "0xc97CDb268B84B08E395619FCcd8c23664538e74f",
+    "fid": 257703
+  },
+  "12": {
+    "tokenId": "12",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 40,
+    "lastFeedAt": 1764917196493,
+    "walletAddress": "0x0421C759983BD7BFC37639be94805F02AB303C7F",
+    "fid": 237056
+  },
+  "16": {
+    "tokenId": "16",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 40,
+    "lastFeedAt": 1764831163242,
+    "walletAddress": "0x7c8a8de2ffbd8746c7722000eBB273C31Bf4020d",
+    "fid": 482907
+  },
+  "18": {
+    "tokenId": "18",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764782784993,
+    "walletAddress": "0x329c89fB12362fb8E8a4B48B853BE9c2047ce490",
+    "fid": 1062463
+  },
+  "30": {
+    "tokenId": "30",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764759588163,
+    "walletAddress": "0xCcAA576fF832AC8fbEab9E5995b6697102dd8b73",
+    "fid": 304987
+  },
+  "32": {
+    "tokenId": "32",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764778279188,
+    "walletAddress": "0xF0123C5ec5603967190c0B8214B30193ccEd538E",
+    "fid": 896299
+  },
+  "37": {
+    "tokenId": "37",
+    "rarity": "RARE",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764774886259,
+    "walletAddress": "0x5A8E9a6f96C7C1827f412bBD716833d94A0Bd714",
+    "fid": 462291
+  },
+  "38": {
+    "tokenId": "38",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764776213364,
+    "walletAddress": "0x1d08B267baEc43C11860Dc3f1Ce84C9477BDEDB0",
+    "fid": 249937
+  },
+  "60": {
+    "tokenId": "60",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764776304828,
+    "walletAddress": "0xAe49d02c630Cbc07F3653C630212bf5f1b1CD810",
+    "fid": 235109
+  },
+  "61": {
+    "tokenId": "61",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764777486322,
+    "walletAddress": "0x8A0c9F56ED3C819Fc1a1EceB1CFbf503C2fa0345",
+    "fid": 236472
+  },
+  "64": {
+    "tokenId": "64",
+    "rarity": "UNCOMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764815368328,
+    "walletAddress": "0x3CCBa8c951C5a160419C9Da573F0eBf3ca6beAB7",
+    "fid": 291408
+  },
+  "65": {
+    "tokenId": "65",
+    "rarity": "COMMON",
+    "level": 3,
+    "exp": 40,
+    "lastFeedAt": 1764921456151,
+    "walletAddress": "0xA40bEA7C289599e907eD73538331474E1CF5bC8F",
+    "fid": 237614
+  },
+  "70": {
+    "tokenId": "70",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764833100463,
+    "walletAddress": "0x851828CB8d59b5E1cFCf214A7C36B6D918947B05",
+    "fid": 237261
+  },
+  "72": {
+    "tokenId": "72",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764800734134,
+    "walletAddress": "0x822a251AAcBDCba3b31e55FEaC2c7b1866C8cdBe",
+    "fid": 254872
+  },
+  "75": {
+    "tokenId": "75",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 80,
+    "lastFeedAt": 1764924470017,
+    "walletAddress": "0xA40bEA7C289599e907eD73538331474E1CF5bC8F",
+    "fid": 237614
+  },
+  "77": {
+    "tokenId": "77",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764757057834,
+    "walletAddress": "0x873170450f4dd293638922a1295925a20631C584",
+    "fid": 333172
+  },
+  "84": {
+    "tokenId": "84",
+    "rarity": "COMMON",
+    "level": 2,
+    "exp": 40,
+    "lastFeedAt": 1764911475647,
+    "walletAddress": "0xd5cB9Da752a553Ac1b7D73ee6623280FBC8a4515",
+    "fid": 304879
+  },
+  "94": {
+    "tokenId": "94",
+    "rarity": "RARE",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764779436386,
+    "walletAddress": "0xe9F551a321E2eC4e8694c3bba6c22665C014f632",
+    "fid": 241561
+  },
+  "106": {
+    "tokenId": "106",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 40,
+    "lastFeedAt": 1764811181990,
+    "walletAddress": "0x5Dfb4310c85F29369fD8c24eA603dFf8901742e5",
+    "fid": 213204
+  },
+  "109": {
+    "tokenId": "109",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764777125114,
+    "walletAddress": "0xCa1653e707Ae82BA937C8E7b306931f5FaFE7E26",
+    "fid": 1027719
+  },
+  "112": {
+    "tokenId": "112",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764792449466,
+    "walletAddress": "0x705a3029ec854BD05787476207818d9bA9E14bd0",
+    "fid": 780137
+  },
+  "114": {
+    "tokenId": "114",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 40,
+    "lastFeedAt": 1764860376233,
+    "walletAddress": "0x61eAfee1A7d74d0584e00d33Bb7417b427307d41",
+    "fid": 1394080
+  },
+  "116": {
+    "tokenId": "116",
+    "rarity": "RARE",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764776986138,
+    "walletAddress": "0xc4c9A30DB4Ba40FfF212A7b66BD777aC6c38F684",
+    "fid": 216398
+  },
+  "123": {
+    "tokenId": "123",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764760285093,
+    "walletAddress": "0x36812C65D3efc0408A0ca0dE1A7AC980f0f7dCF5",
+    "fid": 257065
+  },
+  "149": {
+    "tokenId": "149",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764746412852,
+    "walletAddress": "0x510a5077d83ca9252f518Aa4F8436A5905194267",
+    "fid": 253110
+  },
+  "157": {
+    "tokenId": "157",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 40,
+    "lastFeedAt": 1764748964950,
+    "walletAddress": "0xd41E67f7a5d6aF2fFD55F9CF6E91A23Fe515CFf2",
+    "fid": 251207
+  },
+  "211": {
+    "tokenId": "211",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764768494045,
+    "walletAddress": "0xf6160a86A2DC37a2431B36444Fd650Ebb4D3375A",
+    "fid": 237262
+  },
+  "219": {
+    "tokenId": "219",
+    "rarity": "RARE",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764774727320,
+    "walletAddress": "0x0aaDA2c347744292aC5A6F17C7B648F51c5d8e35",
+    "fid": 237905
+  },
+  "251": {
+    "tokenId": "251",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764891600260,
+    "walletAddress": "0xDDB1b2790ecDdc2c6E6a2B5608E35ADBa2Bfe764",
+    "fid": 895597
+  },
+  "262": {
+    "tokenId": "262",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764774446456,
+    "walletAddress": "0xb0ec130F64A88f31286855B08454E26f41c2F301",
+    "fid": 250224
+  },
+  "263": {
+    "tokenId": "263",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764774970226,
+    "walletAddress": "0x38A834640c7a5A1f8Bd73dDEf0D33e3487C55277",
+    "fid": 1025452
+  },
+  "313": {
+    "tokenId": "313",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764928938135,
+    "walletAddress": "0xe915DA3b1d1F730dbFc7bF6D31F654e994FA8C6d",
+    "fid": 229801
+  },
+  "0xa40bea7c289599e907ed73538331474e1cf5bc8f:75": {
+    "tokenId": "75",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 80,
+    "lastFeedAt": 1764924470017,
+    "walletAddress": "0xA40bEA7C289599e907eD73538331474E1CF5bC8F",
+    "fid": 237614
+  },
+  "0xe915da3b1d1f730dbfc7bf6d31f654e994fa8c6d:313": {
+    "tokenId": "313",
+    "rarity": "COMMON",
+    "level": 1,
+    "exp": 20,
+    "lastFeedAt": 1764928938135,
+    "walletAddress": "0xe915DA3b1d1F730dbFc7bF6D31F654e994FA8C6d",
+    "fid": 229801
   }
 }

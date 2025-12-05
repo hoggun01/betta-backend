@@ -4,17 +4,32 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 
+// Node < 18 fallback
+const fetchFn = global.fetch || require("node-fetch");
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+
+process.on("unhandledRejection", (e) => console.error("UNHANDLED_REJECTION", e));
+process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION", e));
 
 /* =========================
    Config
    ========================= */
 const PORT = Number(process.env.PORT || 4000);
 
-// RPC Base (wajib stabil, jangan default kalau sering rate limit)
-const BASE_RPC_URL =
-  process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org";
+// ✅ MULTI RPC: pisahkan pakai koma
+// contoh:
+// BASE_RPC_URLS="https://base-mainnet.g.alchemy.com/v2/KEY,https://mainnet.base.org,https://rpc.ankr.com/base"
+const BASE_RPC_URLS_RAW =
+  process.env.BASE_RPC_URLS ||
+  process.env.BASE_RPC_URL ||
+  process.env.NEXT_PUBLIC_BASE_RPC_URL ||
+  "https://mainnet.base.org";
+
+const RPC_URLS = BASE_RPC_URLS_RAW.split(",")
+  .map((s) => String(s || "").trim())
+  .filter(Boolean);
 
 // Contract address (wajib)
 const BETTA_CONTRACT =
@@ -23,26 +38,11 @@ const BETTA_CONTRACT =
     process.env.NEXT_PUBLIC_BETTA_CONTRACT_ADDRESS ||
     "").trim();
 
-if (!BETTA_CONTRACT) {
-  console.error("❌ Missing BETTA_CONTRACT_ADDRESS env");
-}
-
-// Contract creation block (BaseScan menunjukkan 38669617)
 const START_BLOCK = BigInt(process.env.BETTA_START_BLOCK || "38669617");
-
-// log scan chunk blocks (kalau RPC limit, turunin ini)
 const LOG_CHUNK = BigInt(process.env.BETTA_LOG_CHUNK || "20000");
-
-// feed config
 const EXP_PER_FEED = Number(process.env.EXP_PER_FEED || 20);
-
-// gampang ganti cooldown di sini:
-// contoh 1 menit: FEED_COOLDOWN_MS=60000
-// contoh 10 menit: FEED_COOLDOWN_MS=600000
-// contoh 30 menit: FEED_COOLDOWN_MS=1800000
 const FEED_COOLDOWN_MS = Number(process.env.FEED_COOLDOWN_MS || 1800000);
 
-// max level per rarity
 const MAX_LEVEL_BY_RARITY = {
   COMMON: 15,
   UNCOMMON: 20,
@@ -52,13 +52,12 @@ const MAX_LEVEL_BY_RARITY = {
   LEGENDARY: 50,
 };
 
-// exp needed (simple & stabil): 100 + (level-1)*40
 function expNeededForNext(level) {
   return Math.max(0, 100 + Math.max(0, level - 1) * 40);
 }
 
 /* =========================
-   Storage (JSON files)
+   Storage
    ========================= */
 const DATA_DIR = path.join(__dirname, "data");
 const PROGRESS_DB_PATH = path.join(DATA_DIR, "database-fish.json");
@@ -67,7 +66,6 @@ const OWNED_CACHE_PATH = path.join(DATA_DIR, "wallet-owned.json");
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-
 function readJsonSafe(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) return fallback;
@@ -78,7 +76,6 @@ function readJsonSafe(filePath, fallback) {
     return fallback;
   }
 }
-
 function writeJsonAtomic(filePath, obj) {
   const tmp = filePath + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
@@ -86,7 +83,6 @@ function writeJsonAtomic(filePath, obj) {
 }
 
 ensureDataDir();
-
 let progressDb = readJsonSafe(PROGRESS_DB_PATH, {});
 let ownedCache = readJsonSafe(OWNED_CACHE_PATH, {});
 
@@ -102,44 +98,22 @@ app.use((req, res, next) => {
 });
 
 /* =========================
-   Minimal JSON-RPC helpers
+   Utils
    ========================= */
-async function rpc(method, params) {
-  const body = {
-    jsonrpc: "2.0",
-    id: 1,
-    method,
-    params,
-  };
-
-  const r = await fetch(BASE_RPC_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    throw new Error(`RPC HTTP ${r.status}: ${t.slice(0, 200)}`);
-  }
-  const j = await r.json();
-  if (j.error) throw new Error(`RPC error: ${JSON.stringify(j.error)}`);
-  return j.result;
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
-
+function isHexAddress(addr) {
+  return /^0x[a-fA-F0-9]{40}$/.test(String(addr || "").trim());
+}
 function toHexBlock(bn) {
   return "0x" + bn.toString(16);
 }
-async function getLatestBlockNumber() {
-  const hex = await rpc("eth_blockNumber", []);
-  return BigInt(hex);
-}
-
 function pad64No0x(hexNo0x) {
   return hexNo0x.padStart(64, "0");
 }
 function topicForAddress(addr) {
-  const a = addr.toLowerCase().replace(/^0x/, "");
+  const a = String(addr).toLowerCase().replace(/^0x/, "");
   return "0x" + pad64No0x(a);
 }
 
@@ -147,9 +121,89 @@ function topicForAddress(addr) {
 const TRANSFER_SIG =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-async function getTransferLogs({ fromBlock, toBlock, fromAddr, toAddr }) {
-  const topics = [TRANSFER_SIG, null, null, null];
+/* =========================
+   JSON-RPC with multi-RPC fallback
+   ========================= */
+let rpcCursor = 0;
 
+function pickRpcUrlsRoundRobin() {
+  if (!RPC_URLS.length) return ["https://mainnet.base.org"];
+  // mulai dari cursor agar rotasi
+  const ordered = [];
+  for (let i = 0; i < RPC_URLS.length; i++) {
+    ordered.push(RPC_URLS[(rpcCursor + i) % RPC_URLS.length]);
+  }
+  rpcCursor = (rpcCursor + 1) % RPC_URLS.length;
+  return ordered;
+}
+
+function shouldFailover(errMsg) {
+  const s = String(errMsg || "").toLowerCase();
+  return (
+    s.includes("no backend is currently healthy") ||
+    s.includes("http 503") ||
+    s.includes("http 502") ||
+    s.includes("http 504") ||
+    s.includes("rate") ||
+    s.includes("timeout") ||
+    s.includes("timed out") ||
+    s.includes("gateway") ||
+    s.includes("temporarily") ||
+    s.includes("busy")
+  );
+}
+
+async function rpc(method, params) {
+  const body = { jsonrpc: "2.0", id: 1, method, params };
+
+  const urls = pickRpcUrlsRoundRobin();
+  let lastErr = null;
+
+  // coba tiap rpc max 2x dengan backoff kecil
+  for (const url of urls) {
+    for (const backoff of [0, 350]) {
+      try {
+        if (backoff) await sleep(backoff);
+
+        const r = await fetchFn(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        const text = await r.text().catch(() => "");
+        if (!r.ok) {
+          throw new Error(`RPC HTTP ${r.status}: ${text.slice(0, 220)}`);
+        }
+
+        const j = text ? JSON.parse(text) : null;
+        if (!j) throw new Error("RPC empty response");
+        if (j.error) throw new Error(`RPC error: ${JSON.stringify(j.error)}`);
+
+        return j.result;
+      } catch (e) {
+        lastErr = e;
+        const msg = String(e?.message || e);
+        // kalau error ini layak failover, lanjut ke rpc url berikutnya
+        if (shouldFailover(msg)) continue;
+        // kalau bukan transient, stop
+        throw e;
+      }
+    }
+  }
+
+  throw lastErr || new Error("RPC_FAILED");
+}
+
+async function getLatestBlockNumber() {
+  const hex = await rpc("eth_blockNumber", []);
+  return BigInt(hex);
+}
+
+async function getTransferLogs({ fromBlock, toBlock, fromAddr, toAddr }) {
+  if (!BETTA_CONTRACT) throw new Error("BETTA_CONTRACT_ADDRESS not set");
+
+  const topics = [TRANSFER_SIG, null, null, null];
   if (fromAddr) topics[1] = topicForAddress(fromAddr);
   if (toAddr) topics[2] = topicForAddress(toAddr);
 
@@ -164,7 +218,6 @@ async function getTransferLogs({ fromBlock, toBlock, fromAddr, toAddr }) {
 }
 
 function tokenIdFromLog(log) {
-  // ERC721 Transfer tokenId indexed => topics[3]
   const t3 = log?.topics?.[3];
   if (!t3) return null;
   try {
@@ -179,9 +232,11 @@ function tokenIdFromLog(log) {
    ========================= */
 async function updateOwnedTokensForWallet(wallet) {
   if (!BETTA_CONTRACT) throw new Error("BETTA_CONTRACT_ADDRESS not set");
-  const w = wallet.toLowerCase();
-  const entry = ownedCache[w] || { lastScannedBlock: null, tokenIds: [] };
 
+  const w = String(wallet || "").trim().toLowerCase();
+  if (!isHexAddress(w)) throw new Error("INVALID_WALLET");
+
+  const entry = ownedCache[w] || { lastScannedBlock: null, tokenIds: [] };
   const latest = await getLatestBlockNumber();
 
   let start = START_BLOCK;
@@ -190,29 +245,35 @@ async function updateOwnedTokensForWallet(wallet) {
     if (prev + 1n > start) start = prev + 1n;
   }
 
-  // current holdings set
   const set = new Set((entry.tokenIds || []).map((x) => String(x)));
 
   if (start > latest) {
-    // nothing to do
-    ownedCache[w] = { lastScannedBlock: String(latest), tokenIds: Array.from(set).sort((a,b)=>Number(a)-Number(b)) };
+    ownedCache[w] = {
+      lastScannedBlock: String(latest),
+      tokenIds: Array.from(set).sort((a, b) => Number(a) - Number(b)),
+    };
     writeJsonAtomic(OWNED_CACHE_PATH, ownedCache);
     return ownedCache[w];
   }
 
-  // scan logs in ranges
   for (let from = start; from <= latest; from += LOG_CHUNK) {
-    const to = (from + LOG_CHUNK - 1n) > latest ? latest : (from + LOG_CHUNK - 1n);
+    const to = from + LOG_CHUNK - 1n > latest ? latest : from + LOG_CHUNK - 1n;
 
-    // receive logs
-    const logsTo = await getTransferLogs({ fromBlock: from, toBlock: to, toAddr: w });
+    const logsTo = await getTransferLogs({
+      fromBlock: from,
+      toBlock: to,
+      toAddr: w,
+    });
     for (const lg of logsTo) {
       const tid = tokenIdFromLog(lg);
       if (tid !== null) set.add(tid.toString());
     }
 
-    // send logs (remove)
-    const logsFrom = await getTransferLogs({ fromBlock: from, toBlock: to, fromAddr: w });
+    const logsFrom = await getTransferLogs({
+      fromBlock: from,
+      toBlock: to,
+      fromAddr: w,
+    });
     for (const lg of logsFrom) {
       const tid = tokenIdFromLog(lg);
       if (tid !== null) set.delete(tid.toString());
@@ -235,7 +296,7 @@ async function updateOwnedTokensForWallet(wallet) {
    ========================= */
 function progressKey(walletAddress, tokenIdStr) {
   const w = (walletAddress || "").toLowerCase();
-  if (!w) return tokenIdStr; // fallback
+  if (!w) return tokenIdStr;
   return `${w}:${tokenIdStr}`;
 }
 function normalizeRarity(r) {
@@ -257,7 +318,6 @@ function getOrInitProgress({ tokenId, rarity, walletAddress, fid }) {
   const rar = normalizeRarity(rarity);
   const key = progressKey(walletAddress, tokenIdStr);
 
-  // prefer walletKey, fallback to tokenId only (biar backward compatible)
   let row = progressDb[key] || progressDb[tokenIdStr];
 
   if (!row) {
@@ -271,7 +331,6 @@ function getOrInitProgress({ tokenId, rarity, walletAddress, fid }) {
       fid: fid ?? null,
     };
   } else {
-    // normalize
     row.tokenId = tokenIdStr;
     row.rarity = rar;
     row.walletAddress = walletAddress || row.walletAddress || null;
@@ -285,44 +344,87 @@ function serializeProgress(row) {
   const level = Number(row.level || 1);
   const exp = Number(row.exp || 0);
   const maxLevel = getMaxLevel(row.rarity);
-  const isMax = level >= maxLevel;
 
-  if (isMax) {
-    return { level: maxLevel, exp: expNeededForNext(maxLevel), expNeededNext: 0, isMax: true };
+  if (level >= maxLevel) {
+    return {
+      level: maxLevel,
+      exp: expNeededForNext(maxLevel),
+      expNeededNext: 0,
+      isMax: true,
+    };
   }
 
-  const need = expNeededForNext(level);
-  return { level, exp, expNeededNext: need, isMax: false };
+  return {
+    level,
+    exp,
+    expNeededNext: expNeededForNext(level),
+    isMax: false,
+  };
 }
 
 /* =========================
    Routes
    ========================= */
 app.get("/", (req, res) => {
-  res.json({ ok: true, message: "Betta backend is running", port: PORT });
+  res.json({
+    ok: true,
+    message: "Betta backend is running",
+    port: PORT,
+    hasContract: !!BETTA_CONTRACT,
+    rpcUrls: RPC_URLS.length,
+  });
 });
 
-// ✅ NEW: returns tokenIds owned by wallet (fast, accurate)
 app.get("/owned", async (req, res) => {
   try {
-    const wallet = String(req.query.wallet || "").trim();
-    if (!wallet || !wallet.startsWith("0x") || wallet.length < 10) {
+    const q =
+      req.query.wallet ||
+      req.query.address ||
+      req.query.owner ||
+      req.query.walletAddress;
+
+    const wallet = String(q || "").trim().toLowerCase();
+    if (!isHexAddress(wallet)) {
       return res.status(400).json({ ok: false, error: "INVALID_WALLET" });
     }
+    if (!BETTA_CONTRACT) {
+      return res.status(500).json({
+        ok: false,
+        error: "MISSING_CONTRACT_ENV",
+        message: "BETTA_CONTRACT_ADDRESS not set",
+      });
+    }
+
+    // kalau cache sudah ada dan punya token, return cepat
+    const cached = ownedCache[wallet];
+    if (cached && Array.isArray(cached.tokenIds) && cached.tokenIds.length > 0) {
+      return res.json({
+        ok: true,
+        wallet,
+        tokenIds: cached.tokenIds,
+        lastScannedBlock: cached.lastScannedBlock ?? null,
+        cached: true,
+      });
+    }
+
     const entry = await updateOwnedTokensForWallet(wallet);
     return res.json({
       ok: true,
-      wallet: wallet.toLowerCase(),
+      wallet,
       tokenIds: entry.tokenIds || [],
-      lastScannedBlock: entry.lastScannedBlock,
+      lastScannedBlock: entry.lastScannedBlock ?? null,
+      cached: false,
     });
   } catch (e) {
     console.error("GET /owned error", e);
-    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+    return res.status(500).json({
+      ok: false,
+      error: "INTERNAL_ERROR",
+      message: String(e?.message || e),
+    });
   }
 });
 
-// returns progress for fishes
 app.post("/progress", (req, res) => {
   try {
     const fishes = req.body?.fishes;
@@ -350,7 +452,6 @@ app.post("/progress", (req, res) => {
   }
 });
 
-// feed (adds exp, enforces cooldown)
 app.post("/feed", (req, res) => {
   try {
     const tokenId = String(req.body?.tokenId ?? "");
@@ -358,9 +459,15 @@ app.post("/feed", (req, res) => {
     const walletAddress = (req.body?.walletAddress || "").toString();
     const fid = req.body?.fid ?? null;
 
-    if (!tokenId) return res.status(400).json({ ok: false, error: "INVALID_TOKEN" });
+    if (!tokenId)
+      return res.status(400).json({ ok: false, error: "INVALID_TOKEN" });
 
-    const { key, row } = getOrInitProgress({ tokenId, rarity, walletAddress, fid });
+    const { key, row } = getOrInitProgress({
+      tokenId,
+      rarity,
+      walletAddress,
+      fid,
+    });
 
     const now = Date.now();
     const last = Number(row.lastFeedAt || 0);
@@ -374,7 +481,6 @@ app.post("/feed", (req, res) => {
       });
     }
 
-    // apply exp/level
     let level = Number(row.level || 1);
     let exp = Number(row.exp || 0);
 
@@ -395,7 +501,6 @@ app.post("/feed", (req, res) => {
 
     exp += EXP_PER_FEED;
 
-    // level up loop
     while (level < maxLevel) {
       const need = expNeededForNext(level);
       if (need <= 0) break;
@@ -407,14 +512,13 @@ app.post("/feed", (req, res) => {
 
     const isMax = level >= maxLevel;
     row.level = level;
-    row.exp = isMax ? expNeededForNext(maxLevel) : exp; // if max, keep UI pretty
+    row.exp = isMax ? expNeededForNext(maxLevel) : exp;
     row.rarity = rarity;
     row.lastFeedAt = now;
     row.walletAddress = walletAddress || row.walletAddress || null;
     row.fid = fid ?? row.fid ?? null;
 
     progressDb[key] = row;
-    // optional: also write tokenId-only row for backward compat (safe)
     progressDb[tokenId] = row;
 
     writeJsonAtomic(PROGRESS_DB_PATH, progressDb);
@@ -437,6 +541,11 @@ app.post("/feed", (req, res) => {
 /* =========================
    Start
    ========================= */
+if (!BETTA_CONTRACT) {
+  console.error("❌ Missing BETTA_CONTRACT_ADDRESS env");
+}
+console.log("RPC_URLS:", RPC_URLS);
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Betta backend listening on port ${PORT}`);
 });
